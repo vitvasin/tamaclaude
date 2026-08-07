@@ -53,7 +53,18 @@ claude-monitor-main` is the user's **own working CYD firmware** — ground truth
   `python -m tamaclaude` resolve from any cwd (needed for the hook command). Already installed
   this session. To finish setup on a machine: `tamaclaude --install`, then paste the claude.ai
   sessionKey into `~/.tamaclaude/session-key`.
-- **Phases 5-7 (data pages, UI, LAN) — NOT STARTED**, independently abandonable per plan.
+- **Phase 5 (data pages) — STARTED: weather done, 145 pytest green.** Ported the page
+  foundation `pages.py` (PageKind, PageFrame, PageRetire, PagePlan, PageHub with age-diffing +
+  capability gating) and the weather vertical: `weather.py` (WeatherFrame encode/squeeze,
+  Open-Meteo geocode/forecast URLs + pure parsers) and `weather_service.py` (fetch schedule,
+  geocode caching, injectable runner). Wired into the daemon: it parses the board's
+  `{"t":"cap","p":[...]}` announce → `PageHub.announce`, drains changed frames each tick and
+  sends them as separate payloads, runs the weather fetch timer, and submits a default rotation
+  plan (mascot + weather-if-configured). Weather config is `~/.tamaclaude/weather.json`
+  `{"place":"Bangkok","unit":"C"}` (no GUI on Windows). `--no-pages` disables it.
+  **Remaining phase 5:** crypto (`Crypto.swift`/`CryptoService.swift`, CoinGecko), stocks
+  (Finnhub, needs key), calendar (mac-only EventKit — skip on Windows). Phases 6-7 (tray UI,
+  LAN) not started, independently abandonable.
 
 ## THE BLOCKER: display renders garbage — RESOLVED 2026-08-07
 

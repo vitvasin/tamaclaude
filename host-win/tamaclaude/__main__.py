@@ -76,6 +76,7 @@ def main(argv: list[str] | None = None) -> int:
             echo="--print" in args,
             verbose="-v" in args or "--verbose" in args,
             use_poll="--no-poll" not in args,
+            use_pages="--no-pages" not in args,
         ).run()
 
     print(__doc__, file=sys.stderr)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 import threading
 from dataclasses import replace
@@ -9,11 +10,14 @@ from datetime import datetime, timezone
 
 from . import usage_reader
 from .ipc import HookServer
-from .paths import TOOLS_JSON
+from .pages import PageHub, PageKind, PagePlan
+from .paths import TOOLS_JSON, WEATHER_CONFIG
 from .process_tree import ProcessHandle, is_alive
 from .protocol import HookEvent
 from .session_store import SessionStore
 from .tool_map import ToolMap
+from .weather import TempUnit
+from .weather_service import WeatherService, WeatherSettings, urllib_fetch
 
 TICK = 1.0
 
@@ -25,6 +29,7 @@ class Daemon:
         echo: bool = False,
         verbose: bool = False,
         use_poll: bool = True,
+        use_pages: bool = True,
     ):
         self.store = SessionStore(tool_map=ToolMap.load_or_default(TOOLS_JSON))
         # เจ้าของ session มาถึงเป็น dict บนสาย — แปลงกลับเป็น handle ตรงจุดที่ใช้จริง
@@ -38,6 +43,26 @@ class Daemon:
             from .usage_poller import UsagePoller, subprocess_launcher
 
             self._poller = UsagePoller(launch=subprocess_launcher())
+
+        # หน้าอื่นนอกจากมาสคอต: hub เก็บเฟรมล่าสุดของแต่ละหน้าและตัดสินว่าอันไหนควรส่งซ้ำ
+        # weather service ดึง Open-Meteo ตามรอบแล้ววางเฟรมไว้ที่ hub · ค่าตั้งอ่านจากไฟล์
+        # (Windows ไม่มี GUI แบบ macOS) — ไม่มีเมือง = ไม่ยิง หน้าอากาศเป็นแค่ช่องว่างในรอบ
+        self._hub = None
+        self._weather = None
+        if use_pages:
+            self._hub = PageHub()
+            place, unit = _weather_config()
+            self._weather = WeatherService(
+                fetch=urllib_fetch(),
+                settings=WeatherSettings(place=place, unit=unit),
+                on_frame=self._on_weather_frame,
+            )
+            # แผนรอบหมุน: มาสคอต + อากาศ(ถ้าตั้งเมืองไว้) · ค่าเริ่มตรงกับ [rotation] ใน
+            # layout.toml (rotation 20, hold 300) เพื่อให้ตรงกับที่บอร์ดใช้ก่อนได้รับแผน
+            order = [PageKind.MASCOT] + ([PageKind.WEATHER] if place.strip() else [])
+            self._hub.submit_plan(
+                PagePlan(order=order, auto_turn=True, rotation=20, hold=300, attention_jump=True)
+            )
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._server = HookServer(self._on_event)
@@ -59,6 +84,32 @@ class Daemon:
     def _on_board_event(self, data: bytes) -> None:
         if self.verbose:
             print(f"[board] {data!r}", file=sys.stderr)
+        # บอร์ดประกาศหน้าที่มันรู้จักตอน subscribe CHR_EVENT: {"t":"cap","p":[0,1,..]}
+        # announce() ล้างสถานะที่ส่งไปแล้วในตัว จึงครอบคลุมทั้งบอร์ดใหม่และการต่อกลับ
+        if self._hub is None:
+            return
+        try:
+            obj = json.loads(data)
+        except (json.JSONDecodeError, ValueError):
+            return
+        if isinstance(obj, dict) and obj.get("t") == "cap" and isinstance(obj.get("p"), list):
+            kinds = []
+            for raw in obj["p"]:
+                try:
+                    kinds.append(PageKind(raw))
+                except ValueError:
+                    continue  # หน้าที่ firmware ใหม่กว่ารู้จักแต่เราไม่ — ข้ามไป
+            with self._lock:
+                self._hub.announce(kinds)
+            if self.verbose:
+                print(f"[pages] board knows {[k.name for k in kinds]}", file=sys.stderr)
+
+    def _on_weather_frame(self, frame, observed_at: datetime) -> None:
+        # เรียกจาก worker thread ของ WeatherService — เข้า hub ใต้ lock เดียวกับ tick
+        if self._hub is None:
+            return
+        with self._lock:
+            self._hub.submit(frame, observed_at)
 
     # MARK: - ออก
 
@@ -68,6 +119,8 @@ class Daemon:
         # แล้วรอบถัดไปของ usage_reader ด้านล่างก็หยิบไปส่ง (สองทางเดินอิสระ ปลายทางเดียว)
         if self._poller is not None:
             self._poller.tick(now)
+        if self._weather is not None:
+            self._weather.tick(now)
         with self._lock:
             snap = self.store.snapshot(now)
         # โควตาถูกฉีดที่นี่ ไม่ใช่ใน SessionStore: daemon เป็นที่เดียวที่แตะดิสก์ ส่วน store เป็น
@@ -81,6 +134,17 @@ class Daemon:
             print(payload.decode("utf-8", "replace"), flush=True)
         if self._transport is not None:
             self._transport.send(payload)
+
+        # เฟรมของหน้าอื่นเดินทางเป็นก้อนแยกบนช่องเดียวกับ snapshot (ADR-0003) · drain คืนเฉพาะ
+        # เฟรมที่เปลี่ยนจริง เรียงตาม PageKind — ค่าตั้งไปก่อนเนื้อหาเสมอ
+        if self._hub is not None:
+            with self._lock:
+                frames = self._hub.drain(now)
+            for frame in frames:
+                if self.echo:
+                    print(frame.decode("utf-8", "replace"), flush=True)
+                if self._transport is not None:
+                    self._transport.send(frame)
         return payload
 
     # MARK: - วงจรชีวิต
@@ -104,6 +168,20 @@ class Daemon:
 
     def stop(self) -> None:
         self._stop.set()
+
+
+def _weather_config() -> tuple[str, TempUnit]:
+    """อ่าน {"place":..,"unit":"C"|"F"} จาก ~/.tamaclaude/weather.json · ไม่มีไฟล์ = ไม่มีเมือง
+    (หน้าอากาศเงียบจนกว่าผู้ใช้จะสร้างไฟล์) ไม่ใช่ error"""
+    try:
+        obj = json.loads(WEATHER_CONFIG.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError):
+        return "", TempUnit.CELSIUS
+    if not isinstance(obj, dict):
+        return "", TempUnit.CELSIUS
+    place = obj.get("place") or ""
+    unit = TempUnit.FAHRENHEIT if str(obj.get("unit", "")).upper() == "F" else TempUnit.CELSIUS
+    return (place if isinstance(place, str) else ""), unit
 
 
 def _alive(owner) -> bool:

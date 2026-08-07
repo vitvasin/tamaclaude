@@ -16,7 +16,7 @@ from tamaclaude.protocol import UsageSnap  # noqa: E402
 
 def _payload(monkeypatch, usage):
     monkeypatch.setattr(usage_reader, "read", lambda now=None, url=None: usage)
-    d = Daemon(use_ble=False, echo=False, use_poll=False)
+    d = Daemon(use_ble=False, echo=False, use_poll=False, use_pages=False)
     return json.loads(d.tick().decode("utf-8"))
 
 

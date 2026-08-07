@@ -21,6 +21,8 @@ USAGE_CACHE = CLAUDE_DIR / ".statusline-usage-cache"
 """แชร์กับเครื่องมืออื่น — คีย์แปลกหน้าในไฟล์นี้ต้องรอดจากการเขียนของเราเสมอ"""
 
 TOOLS_JSON = TAMA_DIR / "tools.json"
+WEATHER_CONFIG = TAMA_DIR / "weather.json"
+"""ค่าตั้งหน้าอากาศบน Windows — ไม่มี GUI แบบ macOS จึงอ่านจากไฟล์ {"place":..,"unit":"C"|"F"}"""
 SESSION_KEY = TAMA_DIR / "session-key"
 FINNHUB_KEY = TAMA_DIR / "finnhub-key"
 LAN_KEY = TAMA_DIR / "lan-key"
