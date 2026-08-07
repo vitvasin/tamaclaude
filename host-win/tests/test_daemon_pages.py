@@ -12,6 +12,7 @@ sys.path.insert(0, str(REPO / "host-win"))
 
 from tamaclaude import usage_reader  # noqa: E402
 from tamaclaude.daemon import Daemon  # noqa: E402
+from tamaclaude.crypto import CryptoFrame, CryptoQuote  # noqa: E402
 from tamaclaude.weather import HourlyPoint, TempUnit, WeatherFrame, WeatherReading  # noqa: E402
 
 T0 = datetime(2026, 8, 7, 12, 0, 0)
@@ -52,6 +53,17 @@ def test_weather_frame_gated_until_cap(monkeypatch, capsys):
     d.tick(now=T0)
     objs = _lines(capsys)
     assert not any(o.get("g") == 1 for o in objs)
+
+
+def test_crypto_frame_sent_after_cap(monkeypatch, capsys):
+    d = _daemon(monkeypatch)
+    d._on_board_event(b'{"t":"cap","p":[0,1,2]}')
+    d._on_crypto_frame(CryptoFrame([CryptoQuote("BTC", 64230.0, -2.1)]), T0)
+    d.tick(now=T0)
+    objs = _lines(capsys)
+    crypto = [o for o in objs if o.get("g") == 2]
+    assert len(crypto) == 1
+    assert crypto[0]["c"][0]["s"] == "BTC"
 
 
 def test_plan_sent_after_cap(monkeypatch, capsys):

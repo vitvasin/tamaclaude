@@ -151,3 +151,24 @@ def head(s: str, limit: int | Cells) -> str:
 def display_width(s: str) -> int:
     """ความยาวที่ตาเห็น หน่วยเป็นช่อง — ตัวเดียวกับที่ `clip` ใช้ตัดสิน"""
     return thai.display_width(s)
+
+
+def grouped(number: str) -> str:
+    """ใส่ตัวคั่นหลักพัน — ตัวคั่นบนจอนี้เป็นข้อตกลงของ *จอ* ไม่ใช่ของเครื่องที่รันเดมอน
+
+    ทำงานบนสตริงที่จัดรูปแล้ว ไม่ใช่ Double — จำนวนทศนิยมถูกตัดสินไปแล้วตามขนาดราคา
+    (`decimals` ของแต่ละหน้า) ขั้นนี้ต้องไม่ไปยุ่งกับมัน
+    """
+    sign = "-" if number.startswith("-") else ""
+    body = number[1:] if sign else number
+    dot = body.find(".")
+    whole, rest = (body, "") if dot < 0 else (body[:dot], body[dot:])
+    if len(whole) <= 3 or not whole.isdigit():
+        return sign + whole + rest
+    out = []
+    n = len(whole)
+    for i, c in enumerate(whole):
+        if i > 0 and (n - i) % 3 == 0:
+            out.append(",")
+        out.append(c)
+    return sign + "".join(out) + rest

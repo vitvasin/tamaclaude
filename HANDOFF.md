@@ -53,18 +53,19 @@ claude-monitor-main` is the user's **own working CYD firmware** — ground truth
   `python -m tamaclaude` resolve from any cwd (needed for the hook command). Already installed
   this session. To finish setup on a machine: `tamaclaude --install`, then paste the claude.ai
   sessionKey into `~/.tamaclaude/session-key`.
-- **Phase 5 (data pages) — STARTED: weather done, 145 pytest green.** Ported the page
-  foundation `pages.py` (PageKind, PageFrame, PageRetire, PagePlan, PageHub with age-diffing +
-  capability gating) and the weather vertical: `weather.py` (WeatherFrame encode/squeeze,
-  Open-Meteo geocode/forecast URLs + pure parsers) and `weather_service.py` (fetch schedule,
-  geocode caching, injectable runner). Wired into the daemon: it parses the board's
-  `{"t":"cap","p":[...]}` announce → `PageHub.announce`, drains changed frames each tick and
-  sends them as separate payloads, runs the weather fetch timer, and submits a default rotation
-  plan (mascot + weather-if-configured). Weather config is `~/.tamaclaude/weather.json`
-  `{"place":"Bangkok","unit":"C"}` (no GUI on Windows). `--no-pages` disables it.
-  **Remaining phase 5:** crypto (`Crypto.swift`/`CryptoService.swift`, CoinGecko), stocks
-  (Finnhub, needs key), calendar (mac-only EventKit — skip on Windows). Phases 6-7 (tray UI,
-  LAN) not started, independently abandonable.
+- **Phase 5 (data pages) — weather + crypto done, 162 pytest green.** Page foundation
+  `pages.py` (PageKind, PageFrame, PageRetire, PagePlan, PageHub with age-diffing + capability
+  gating). Weather vertical: `weather.py` + `weather_service.py` (Open-Meteo, no key). Crypto
+  vertical: `crypto.py` + `crypto_service.py` (CoinGecko, no key) — includes the sparkline fold
+  with integer index math matching `ct_trend_fold`/`gen/trend.py`, both ends kept, last point =
+  `now`; `text.grouped` added for thousands separators. The daemon parses the board
+  `{"t":"cap","p":[...]}` announce, drains changed frames each tick → separate payloads, runs
+  both fetch timers, submits a default rotation plan (mascot + each configured page). Configs
+  (no GUI on Windows): `~/.tamaclaude/weather.json` `{"place":"Bangkok","unit":"C"}` and
+  `~/.tamaclaude/crypto.json` `{"coins":["btc","eth"]}`. `--no-pages` disables all.
+  **Remaining phase 5:** stocks (`Stocks.swift`/`StocksService.swift`, Finnhub — needs the key
+  file + market-hours gating; borrows the crypto watchlist shape), calendar (mac-only EventKit —
+  skip on Windows). Phases 6-7 (tray UI, LAN) not started, independently abandonable.
 
 ## THE BLOCKER: display renders garbage — RESOLVED 2026-08-07
 

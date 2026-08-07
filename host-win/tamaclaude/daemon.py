@@ -9,9 +9,11 @@ from dataclasses import replace
 from datetime import datetime, timezone
 
 from . import usage_reader
+from .crypto_service import CryptoService, CryptoSettings
+from .crypto_service import urllib_fetch as crypto_fetch
 from .ipc import HookServer
 from .pages import PageHub, PageKind, PagePlan
-from .paths import TOOLS_JSON, WEATHER_CONFIG
+from .paths import CRYPTO_CONFIG, TOOLS_JSON, WEATHER_CONFIG
 from .process_tree import ProcessHandle, is_alive
 from .protocol import HookEvent
 from .session_store import SessionStore
@@ -49,6 +51,7 @@ class Daemon:
         # (Windows ไม่มี GUI แบบ macOS) — ไม่มีเมือง = ไม่ยิง หน้าอากาศเป็นแค่ช่องว่างในรอบ
         self._hub = None
         self._weather = None
+        self._crypto = None
         if use_pages:
             self._hub = PageHub()
             place, unit = _weather_config()
@@ -57,9 +60,19 @@ class Daemon:
                 settings=WeatherSettings(place=place, unit=unit),
                 on_frame=self._on_weather_frame,
             )
-            # แผนรอบหมุน: มาสคอต + อากาศ(ถ้าตั้งเมืองไว้) · ค่าเริ่มตรงกับ [rotation] ใน
-            # layout.toml (rotation 20, hold 300) เพื่อให้ตรงกับที่บอร์ดใช้ก่อนได้รับแผน
-            order = [PageKind.MASCOT] + ([PageKind.WEATHER] if place.strip() else [])
+            coins = _crypto_config()
+            self._crypto = CryptoService(
+                fetch=crypto_fetch(),
+                settings=CryptoSettings(coins=coins),
+                on_frame=self._on_crypto_frame,
+            )
+            # แผนรอบหมุน: มาสคอต + หน้าที่ตั้งค่าไว้ · ค่าเริ่มตรงกับ [rotation] ใน layout.toml
+            # (rotation 20, hold 300) เพื่อให้ตรงกับที่บอร์ดใช้ก่อนได้รับแผน
+            order = [PageKind.MASCOT]
+            if place.strip():
+                order.append(PageKind.WEATHER)
+            if coins:
+                order.append(PageKind.CRYPTO)
             self._hub.submit_plan(
                 PagePlan(order=order, auto_turn=True, rotation=20, hold=300, attention_jump=True)
             )
@@ -111,6 +124,12 @@ class Daemon:
         with self._lock:
             self._hub.submit(frame, observed_at)
 
+    def _on_crypto_frame(self, frame, observed_at: datetime) -> None:
+        if self._hub is None:
+            return
+        with self._lock:
+            self._hub.submit(frame, observed_at)
+
     # MARK: - ออก
 
     def tick(self, now: datetime | None = None) -> bytes:
@@ -121,6 +140,8 @@ class Daemon:
             self._poller.tick(now)
         if self._weather is not None:
             self._weather.tick(now)
+        if self._crypto is not None:
+            self._crypto.tick(now)
         with self._lock:
             snap = self.store.snapshot(now)
         # โควตาถูกฉีดที่นี่ ไม่ใช่ใน SessionStore: daemon เป็นที่เดียวที่แตะดิสก์ ส่วน store เป็น
@@ -182,6 +203,19 @@ def _weather_config() -> tuple[str, TempUnit]:
     place = obj.get("place") or ""
     unit = TempUnit.FAHRENHEIT if str(obj.get("unit", "")).upper() == "F" else TempUnit.CELSIUS
     return (place if isinstance(place, str) else ""), unit
+
+
+def _crypto_config() -> list[str]:
+    """อ่าน {"coins":[...]} จาก ~/.tamaclaude/crypto.json · ไม่มีไฟล์ = ไม่มีเหรียญ (หน้าคริปโต
+    เงียบ) ไม่ใช่ error"""
+    try:
+        obj = json.loads(CRYPTO_CONFIG.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError):
+        return []
+    coins = obj.get("coins") if isinstance(obj, dict) else None
+    if not isinstance(coins, list):
+        return []
+    return [c for c in coins if isinstance(c, str)]
 
 
 def _alive(owner) -> bool:
