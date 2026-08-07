@@ -30,6 +30,23 @@ SCAN_SECONDS = 8.0
 RETRY_SECONDS = 3.0
 
 
+def _stream_key(payload: bytes) -> str:
+    """สายของ payload — แยกเหมือนที่ firmware แยก (main.c): มีคีย์ `pl` = plan, มี `g` = เฟรม
+    ของหน้านั้น (ค่า g), ไม่มีทั้งคู่ = snapshot ของมาสคอต · เครื่องหมายคำพูดใน *ค่า* ของ JSON
+    ถูก escape เสมอ ลำดับไบต์ `"g":` จึงโผล่เฉพาะตรงที่เป็นคีย์จริง"""
+    if b'"pl":' in payload:
+        return "plan"
+    i = payload.find(b'"g":')
+    if i < 0:
+        return "mascot"
+    j = i + 4
+    num = bytearray()
+    while j < len(payload) and payload[j] in b"-0123456789":
+        num.append(payload[j])
+        j += 1
+    return "page:" + (num.decode() or "?")
+
+
 class BleTransport:
     """เธรด asyncio ตัวเดียวที่เป็นเจ้าของวิทยุ
 
@@ -49,8 +66,13 @@ class BleTransport:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
         self._client: BleakClient | None = None
-        self._pending: bytes | None = None
-        self._last_sent: bytes | None = None
+        # คิวแยกตาม *สาย* ไม่ใช่ช่องเดียว: snapshot ของมาสคอต, plan, และเฟรมของแต่ละหน้าเป็น
+        # คนละสายกัน · ช่องเดียวทับกันทำให้เฟรมที่ drain พร้อมกันในหนึ่ง tick (เช่นตอนบอร์ด
+        # เพิ่งประกาศ cap แล้วทุกหน้าถูกส่งพร้อมกัน) เหลือรอดแค่ตัวสุดท้าย — หน้าอากาศหาย
+        # เพราะหน้าคริปโต (g มากกว่า) ทับ แล้วไม่ re-drain อีก 15 นาที · ใหม่กว่าในสายเดียวกัน
+        # ยังทับได้ (บอร์ดไม่ต้องการอดีตที่ช้าลงเรื่อยๆ) แต่คนละสายอยู่ร่วมกัน
+        self._pending: dict[str, bytes] = {}
+        self._last_sent: dict[str, bytes] = {}
         self._stop = threading.Event()
         self.connected = False
 
@@ -80,12 +102,13 @@ class BleTransport:
     # MARK: - สิ่งที่โลกภายนอกเรียก (จากเธรดอื่นเสมอ)
 
     def send(self, payload: bytes) -> None:
-        """คิวหนึ่งช่อง ทับของเดิมโดยตั้งใจ
+        """คิวแยกตามสาย ทับของเดิมเฉพาะสายเดียวกัน
 
-        snapshot ที่ใหม่กว่าแทนที่อันเก่าได้เสมอ — คิวยาวแปลว่าบอร์ดจะได้อดีตที่ช้าลงเรื่อยๆ
-        ซึ่งเป็นเหตุผลเดียวกับที่ท่ามาสคอตไม่เข้าคิว
+        ใหม่กว่าในสายเดิมแทนที่ได้เสมอ (บอร์ดไม่ต้องการอดีตที่ช้าลง) แต่คนละสายไม่ทับกัน
+        · เก็บลำดับที่ถูก send เข้ามา (dict รักษาลำดับ) เพื่อให้ plan ไปก่อนเฟรมของหน้าเหมือน
+        ที่ PageHub ตั้งใจ
         """
-        self._pending = payload
+        self._pending[_stream_key(payload)] = payload
 
     # MARK: - ข้างใน
 
@@ -115,7 +138,7 @@ class BleTransport:
             self._set_connected(True)
             # ส่งใหม่ทั้งก้อนหลังต่อติด — บอร์ดที่เพิ่งกลับมาไม่มีอะไรบนจอเลย และ
             # การกันซ้ำ (`_last_sent`) จะกลืน snapshot ที่เหมือนเดิมทิ้งไปเงียบๆ
-            self._last_sent = None
+            self._last_sent.clear()
 
             if self._on_event is not None:
                 try:
@@ -126,13 +149,21 @@ class BleTransport:
                     pass
 
             while not self._stop.is_set() and client.is_connected:
-                payload, self._pending = self._pending, None
-                if payload is not None and payload != self._last_sent:
+                # หยิบทุกสายที่ค้างอยู่รอบนี้ทีเดียว — เขียนทีละ characteristic ตามลำดับที่เข้ามา
+                # (plan ก่อนเฟรมหน้า) · เฟรมที่ถูก send ระหว่าง await จะไปรอบถัดไป
+                batch, self._pending = self._pending, {}
+                broke = False
+                for key, payload in batch.items():
+                    if payload == self._last_sent.get(key):
+                        continue  # กันซ้ำต่อสาย — snapshot เดิมทุก 0.2s ไม่ต้องเขียนใหม่
                     try:
                         await client.write_gatt_char(CHR_STATE, payload, response=True)
-                        self._last_sent = payload
+                        self._last_sent[key] = payload
                     except Exception:
+                        broke = True
                         break
+                if broke:
+                    break
                 await asyncio.sleep(0.2)
         self._client = None
 
