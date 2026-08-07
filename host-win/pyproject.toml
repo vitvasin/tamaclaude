@@ -7,7 +7,7 @@ name = "tamaclaude"
 version = "0.1.0"
 description = "TamaClaude Windows host — Claude Code desk-monitor daemon (BLE + quota)"
 requires-python = ">=3.11"
-dependencies = ["bleak>=0.22"]
+dependencies = ["bleak>=0.22", "tzdata>=2024.1"]
 
 [project.scripts]
 # ทำให้ `tamaclaude --daemon` / `--hook` / `--usage-poll` รันได้จากทุกที่ ไม่ต้อง cd เข้า host-win

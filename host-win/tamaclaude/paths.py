@@ -26,6 +26,9 @@ WEATHER_CONFIG = TAMA_DIR / "weather.json"
 
 CRYPTO_CONFIG = TAMA_DIR / "crypto.json"
 """watchlist หน้าคริปโต — {"coins":["btc","eth",...]} (สูงสุด 5)"""
+
+STOCKS_CONFIG = TAMA_DIR / "stocks.json"
+"""watchlist หน้าหุ้น — {"symbols":["AAPL","MSFT",...]} (สูงสุด 5) · ต้องมี finnhub-key ด้วย"""
 SESSION_KEY = TAMA_DIR / "session-key"
 FINNHUB_KEY = TAMA_DIR / "finnhub-key"
 LAN_KEY = TAMA_DIR / "lan-key"

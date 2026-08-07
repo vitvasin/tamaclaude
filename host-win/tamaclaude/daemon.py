@@ -13,10 +13,12 @@ from .crypto_service import CryptoService, CryptoSettings
 from .crypto_service import urllib_fetch as crypto_fetch
 from .ipc import HookServer
 from .pages import PageHub, PageKind, PagePlan
-from .paths import CRYPTO_CONFIG, TOOLS_JSON, WEATHER_CONFIG
+from .paths import CRYPTO_CONFIG, STOCKS_CONFIG, TOOLS_JSON, WEATHER_CONFIG
 from .process_tree import ProcessHandle, is_alive
 from .protocol import HookEvent
 from .session_store import SessionStore
+from .stocks_service import StocksService, StockSettings, read_key
+from .stocks_service import urllib_fetch as stocks_fetch
 from .tool_map import ToolMap
 from .weather import TempUnit
 from .weather_service import WeatherService, WeatherSettings, urllib_fetch
@@ -52,6 +54,7 @@ class Daemon:
         self._hub = None
         self._weather = None
         self._crypto = None
+        self._stocks = None
         if use_pages:
             self._hub = PageHub()
             place, unit = _weather_config()
@@ -66,6 +69,13 @@ class Daemon:
                 settings=CryptoSettings(coins=coins),
                 on_frame=self._on_crypto_frame,
             )
+            symbols = _stocks_config()
+            self._stocks = StocksService(
+                fetch=stocks_fetch(),
+                settings=StockSettings(symbols=symbols),
+                key=read_key,
+                on_frame=self._on_stocks_frame,
+            )
             # แผนรอบหมุน: มาสคอต + หน้าที่ตั้งค่าไว้ · ค่าเริ่มตรงกับ [rotation] ใน layout.toml
             # (rotation 20, hold 300) เพื่อให้ตรงกับที่บอร์ดใช้ก่อนได้รับแผน
             order = [PageKind.MASCOT]
@@ -73,6 +83,8 @@ class Daemon:
                 order.append(PageKind.WEATHER)
             if coins:
                 order.append(PageKind.CRYPTO)
+            if symbols:
+                order.append(PageKind.STOCKS)
             self._hub.submit_plan(
                 PagePlan(order=order, auto_turn=True, rotation=20, hold=300, attention_jump=True)
             )
@@ -130,6 +142,12 @@ class Daemon:
         with self._lock:
             self._hub.submit(frame, observed_at)
 
+    def _on_stocks_frame(self, frame, observed_at: datetime) -> None:
+        if self._hub is None:
+            return
+        with self._lock:
+            self._hub.submit(frame, observed_at)
+
     # MARK: - ออก
 
     def tick(self, now: datetime | None = None) -> bytes:
@@ -142,6 +160,8 @@ class Daemon:
             self._weather.tick(now)
         if self._crypto is not None:
             self._crypto.tick(now)
+        if self._stocks is not None:
+            self._stocks.tick(now)
         with self._lock:
             snap = self.store.snapshot(now)
         # โควตาถูกฉีดที่นี่ ไม่ใช่ใน SessionStore: daemon เป็นที่เดียวที่แตะดิสก์ ส่วน store เป็น
@@ -216,6 +236,18 @@ def _crypto_config() -> list[str]:
     if not isinstance(coins, list):
         return []
     return [c for c in coins if isinstance(c, str)]
+
+
+def _stocks_config() -> list[str]:
+    """อ่าน {"symbols":[...]} จาก ~/.tamaclaude/stocks.json · ไม่มีไฟล์ = ไม่มีสัญลักษณ์"""
+    try:
+        obj = json.loads(STOCKS_CONFIG.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError):
+        return []
+    symbols = obj.get("symbols") if isinstance(obj, dict) else None
+    if not isinstance(symbols, list):
+        return []
+    return [s for s in symbols if isinstance(s, str)]
 
 
 def _alive(owner) -> bool:

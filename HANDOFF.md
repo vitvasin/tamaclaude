@@ -63,9 +63,16 @@ claude-monitor-main` is the user's **own working CYD firmware** — ground truth
   both fetch timers, submits a default rotation plan (mascot + each configured page). Configs
   (no GUI on Windows): `~/.tamaclaude/weather.json` `{"place":"Bangkok","unit":"C"}` and
   `~/.tamaclaude/crypto.json` `{"coins":["btc","eth"]}`. `--no-pages` disables all.
-  **Remaining phase 5:** stocks (`Stocks.swift`/`StocksService.swift`, Finnhub — needs the key
-  file + market-hours gating; borrows the crypto watchlist shape), calendar (mac-only EventKit —
-  skip on Windows). Phases 6-7 (tray UI, LAN) not started, independently abandonable.
+  Stocks vertical: `stocks.py` + `stocks_service.py` (Finnhub) — StocksFrame with the day-range
+  band + market-closed key + its four-stage squeeze; `MarketHours` via `zoneinfo`
+  America/New_York (needs the `tzdata` package on Windows — now a dependency); the Finnhub key
+  reuses `secret_file` (mode-600/ACL rule) at `~/.tamaclaude/finnhub-key`; per-symbol fetch,
+  unknown-symbol cache, last-quote replay when closed, key-rejected latch. Configured via
+  `~/.tamaclaude/stocks.json` `{"symbols":["AAPL","MSFT"]}`. Wired into the daemon + rotation
+  plan. **178 pytest green.**
+  **Remaining phase 5:** calendar only (mac-only EventKit — skip on Windows; the four
+  network-backed pages are all done). Phases 6-7 (tray UI, LAN) not started, independently
+  abandonable.
 
 ## THE BLOCKER: display renders garbage — RESOLVED 2026-08-07
 
