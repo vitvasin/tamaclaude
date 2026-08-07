@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tamaclaude"
+version = "0.1.0"
+description = "TamaClaude Windows host — Claude Code desk-monitor daemon (BLE + quota)"
+requires-python = ">=3.11"
+dependencies = ["bleak>=0.22"]
+
+[project.scripts]
+# ทำให้ `tamaclaude --daemon` / `--hook` / `--usage-poll` รันได้จากทุกที่ ไม่ต้อง cd เข้า host-win
+# ติดตั้งครั้งเดียว: pip install -e host-win (ในรูปแบบ editable — แก้โค้ดแล้วไม่ต้องติดตั้งซ้ำ)
+tamaclaude = "tamaclaude.__main__:main"
+
+[tool.setuptools]
+packages = ["tamaclaude"]

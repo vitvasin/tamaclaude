@@ -10,3 +10,8 @@ __pycache__/
 # snapshot ของรอบ review — งอกไฟล์ลงวันที่ทุกครั้งที่รัน และสิ่งที่ได้จากมันถูกย้ายไป
 # อยู่ในคอมเมนต์ข้างโค้ดกับ git log แล้ว
 .impeccable/
+
+# host-win runtime + build artifacts
+host-win/daemon.log
+*.egg-info/
+.pytest_cache/
