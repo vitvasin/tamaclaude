@@ -53,31 +53,28 @@ static void lcd_cmd(uint8_t c, const uint8_t *d, size_t n)
     cs(1);
 }
 
-// ลำดับ init ของ ILI9341 ที่ตรงกับผลวัด: MADCTL 0x28 (MV|BGR), INVOFF, COLMOD 0x55
+// init = แกน minimal เท่า firmware/probe (ที่วาด fill สะอาด) + gamma · MADCTL 0x60 (RGB)
+//
+// เรื่องยาว: init เต็มของ ILI9341 เดิม (power/0xEF/0xCF/0xED/0xE8/0xCB/0xF7/0xEA/0xC0-0xC7/
+// 0xB1/0xB6 + gamma) ทำ "จอขยะ" · ไม่ใช่ DMA ไม่ใช่ขนาด transaction — ปิด DMA แล้วยังขยะ
+// เท่าเดิม · พอตัด init เหลือเท่า probe จอสะอาดทันที แล้วเติม gamma กลับ (กลุ่มเดียวที่
+// พิสูจน์แล้วว่าปลอดภัย) เพื่อแก้สีซีด · ตัวการจริงจึงอยู่ในกลุ่ม power/0xEF/0xB1/0xB6 ที่ยัง
+// ตัดออก — ยังไม่ได้ bisect ต่อว่าคำสั่งไหนกันแน่ เพราะแกน+gamma ให้ภาพครบถ้วนอยู่แล้ว
 static void panel_init(void)
 {
     lcd_cmd(0x01, NULL, 0);  // SWRESET
     vTaskDelay(pdMS_TO_TICKS(150));
     lcd_cmd(0x11, NULL, 0);  // SLPOUT
     vTaskDelay(pdMS_TO_TICKS(150));
-
-    lcd_cmd(0xCF, (const uint8_t[]){0x00, 0xC1, 0x30}, 3);
-    lcd_cmd(0xED, (const uint8_t[]){0x64, 0x03, 0x12, 0x81}, 4);
-    lcd_cmd(0xE8, (const uint8_t[]){0x85, 0x00, 0x78}, 3);
-    lcd_cmd(0xCB, (const uint8_t[]){0x39, 0x2C, 0x00, 0x34, 0x02}, 5);
-    lcd_cmd(0xF7, (const uint8_t[]){0x20}, 1);
-    lcd_cmd(0xEA, (const uint8_t[]){0x00, 0x00}, 2);
-    lcd_cmd(0xC0, (const uint8_t[]){0x23}, 1);        // power control 1
-    lcd_cmd(0xC1, (const uint8_t[]){0x10}, 1);        // power control 2
-    lcd_cmd(0xC5, (const uint8_t[]){0x3E, 0x28}, 2);  // VCOM
-    lcd_cmd(0xC7, (const uint8_t[]){0x86}, 1);
-
-    lcd_cmd(0x36, (const uint8_t[]){0x28}, 1);  // MADCTL: MV | BGR -> แนวนอน 320x240
     lcd_cmd(0x3A, (const uint8_t[]){0x55}, 1);  // COLMOD: 16 bit/pixel
-    lcd_cmd(0xB1, (const uint8_t[]){0x00, 0x18}, 2);
-    lcd_cmd(0xB6, (const uint8_t[]){0x08, 0x82, 0x27}, 3);
+    // MADCTL 0x60 = MV|MX (ไม่ตั้ง BGR) — MV|MX แก้ทั้งแนวนอนและมิเรอร์ · ตั้ง BGR (0x08)
+    // ทำให้แดงกับน้ำเงินสลับกัน (มาสคอตส้มกลายเป็นฟ้า) แผงนี้จึงเป็น RGB ไม่ใช่ BGR
+    lcd_cmd(0x36, (const uint8_t[]){0x60}, 1);
+    lcd_cmd(0x20, NULL, 0);  // INVOFF — probe ยืนยันพื้นดำจริงเมื่อปิด
+    lcd_cmd(0x13, NULL, 0);  // NORON
 
-    // ไม่ตั้ง gamma แล้วจอจะยกระดับดำ ภาพซีดทั้งจอ
+    // gamma เท่านั้น — คำสั่งกลุ่มนี้ปลอดภัย (ไม่ทำจอขยะ) และแก้สีซีด/ดำยกระดับที่เกิดตอน
+    // init เปล่าๆ · ตัวที่ทำขยะคือกลุ่ม power/0xEF/0xB1/0xB6 ที่ยังตัดออกอยู่ (ดูคอมเมนต์บน)
     lcd_cmd(0xF2, (const uint8_t[]){0x00}, 1);  // 3Gamma off
     lcd_cmd(0x26, (const uint8_t[]){0x01}, 1);  // gamma curve 1
     lcd_cmd(0xE0,
@@ -88,11 +85,10 @@ static void panel_init(void)
             (const uint8_t[]){0x00, 0x0E, 0x14, 0x03, 0x11, 0x07, 0x31, 0xC1, 0x48, 0x08, 0x0F,
                               0x0C, 0x31, 0x36, 0x0F},
             15);  // negative gamma
-    lcd_cmd(0x20, NULL, 0);  // INVOFF — จอตัวนี้สีถูกเมื่อ inversion ปิด
-    lcd_cmd(0x11, NULL, 0);
-    vTaskDelay(pdMS_TO_TICKS(120));
+
+    vTaskDelay(pdMS_TO_TICKS(10));
     lcd_cmd(0x29, NULL, 0);  // DISPON
-    vTaskDelay(pdMS_TO_TICKS(20));
+    vTaskDelay(pdMS_TO_TICKS(120));
 }
 
 static void backlight_init(void)
@@ -146,10 +142,20 @@ void ct_lcd_init(void)
         .sclk_io_num = PIN_SCLK,
         .quadwp_io_num = -1,
         .quadhd_io_num = -1,
-        // ก้อนใหญ่สุดที่จะส่งคือบัฟเฟอร์วาดของ LVGL หนึ่งก้อน
-        .max_transfer_sz = CT_SCREEN_WIDTH * 24 * 2 + 64,
+        // DMA ปิด จึงส่งผ่าน FIFO ฮาร์ดแวร์ล้วนๆ ก้อนละไม่เกิน 64 ไบต์ — ค่านี้ถูกไดรเวอร์
+        // บังคับเป็น SOC_SPI_MAXIMUM_BUFFER_SIZE (64) เมื่อ DMA ปิดอยู่แล้ว
+        .max_transfer_sz = 64,
     };
-    ESP_ERROR_CHECK(spi_bus_initialize(LCD_HOST, &bus, SPI_DMA_CH_AUTO));
+    // **DMA ปิด** — ป้อน FIFO ฮาร์ดแวร์ล้วนทีละ ≤64 ไบต์ ตรงกับไลบรารีที่ขับแผงนี้ได้จริง
+    // (Arduino_GFX ตัว Arduino_ESP32SPI ไม่ใช่ตัว ...DMA ป้อน FIFO เองทีละ 32 พิกเซล)
+    //
+    // หมายเหตุที่แลกมาด้วยหลายรอบแฟลช: ตัวการของ "จอขยะ" **ไม่ใช่** DMA และไม่ใช่ขนาด
+    // transaction — ปิด DMA ทั้งที่ init เต็มยังขยะเหมือนเดิม · ตัวการจริงคือชุดคำสั่ง
+    // power/gamma เต็มของ ILI9341 ใน panel_init (ดูที่นั่น) พอตัดเหลือ init เท่า probe ก็หาย
+    // ที่ยังปิด DMA ไว้เพราะเป็นระบอบที่พิสูจน์แล้วบนแผงตัวนี้ ไม่ใช่เพราะมันแก้ขยะ · เมื่อ
+    // DMA ปิด spi_device_polling_transmit ใช้ FIFO ของ CPU (≤64 ไบต์) — ct_lcd_blit จึงแบ่ง
+    // ส่งทีละ 64 ไบต์
+    ESP_ERROR_CHECK(spi_bus_initialize(LCD_HOST, &bus, SPI_DMA_DISABLED));
 
     spi_device_interface_config_t dev = {
         .clock_speed_hz = LCD_CLOCK_HZ,
@@ -164,7 +170,8 @@ void ct_lcd_init(void)
     ESP_LOGI(TAG, "panel ready %dx%d", CT_SCREEN_WIDTH, CT_SCREEN_HEIGHT);
 }
 
-void ct_lcd_blit(int x1, int y1, int x2, int y2, const void *pixels, size_t bytes)
+void ct_lcd_blit_chunked(int x1, int y1, int x2, int y2, const void *pixels, size_t bytes,
+                         size_t chunk)
 {
     uint8_t col[4] = {(uint8_t)(x1 >> 8), (uint8_t)x1, (uint8_t)(x2 >> 8), (uint8_t)x2};
     uint8_t row[4] = {(uint8_t)(y1 >> 8), (uint8_t)y1, (uint8_t)(y2 >> 8), (uint8_t)y2};
@@ -174,9 +181,8 @@ void ct_lcd_blit(int x1, int y1, int x2, int y2, const void *pixels, size_t byte
 
     cs(0);
     dc(1);
-    // แบ่งส่งเป็นก้อนตามขนาดที่ DMA รับได้ในครั้งเดียว
     const uint8_t *p = (const uint8_t *)pixels;
-    const size_t chunk = CT_SCREEN_WIDTH * 24 * 2;
+    if (chunk == 0) chunk = bytes;
     while (bytes) {
         size_t n = bytes > chunk ? chunk : bytes;
         spi_write(p, n);
@@ -184,4 +190,11 @@ void ct_lcd_blit(int x1, int y1, int x2, int y2, const void *pixels, size_t byte
         bytes -= n;
     }
     cs(1);
+}
+
+void ct_lcd_blit(int x1, int y1, int x2, int y2, const void *pixels, size_t bytes)
+{
+    // ก้อนละ 64 ไบต์ = ขนาด FIFO ฮาร์ดแวร์ · DMA ปิดอยู่ (ดู ct_lcd_init) จึงส่งใหญ่กว่านี้
+    // ไม่ได้ และไม่ต้อง — นี่คือระบอบเดียวกับ Arduino_ESP32SPI ที่ขับแผงนี้ได้สะอาด
+    ct_lcd_blit_chunked(x1, y1, x2, y2, pixels, bytes, 64);
 }
