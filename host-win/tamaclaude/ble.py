@@ -155,12 +155,7 @@ class BleTransport:
             self._paired = False  # ลิงก์ใหม่ = ต้อง pair ใหม่ก่อนเขียน config รอบนี้
 
             if self._on_event is not None:
-                try:
-                    await client.start_notify(
-                        CHR_EVENT, lambda _h, data: self._on_event(bytes(data))
-                    )
-                except Exception:
-                    pass
+                await self._subscribe_events(client)
 
             while not self._stop.is_set() and client.is_connected:
                 # หยิบทุกสายที่ค้างอยู่รอบนี้ทีเดียว — เขียนทีละ characteristic ตามลำดับที่เข้ามา
@@ -182,6 +177,33 @@ class BleTransport:
                     break
                 await asyncio.sleep(0.2)
         self._client = None
+
+    async def _subscribe_events(self, client: BleakClient) -> None:
+        """สมัครรับ CHR_EVENT ให้ได้ cap ครบก้อน — ต้องรอ MTU โตก่อน แล้ว toggle การสมัคร
+
+        บอร์ดส่ง cap (`{"t":"cap","p":[...]}`) ตอน *subscribe* (on_ready ใน ct_ble.c) แต่มีสอง
+        กับดักบน WinRT:
+        - MTU เริ่มที่ 23 (payload 20B) แล้วค่อยโตเป็น 517 ราวสองวินาที · cap 27B ที่ออกตอน
+          MTU ยังเล็กจะถูกตัดเหลือ 20B — JSON พัง, decode คืน None, ทุกหน้าถูก gate ทิ้ง
+        - บอร์ดที่ bond ไว้แล้ว Windows จะ *restore* การ subscribe ให้เองตอน connect (ก่อน MTU
+          โต) แล้ว start_notify ทีหลังไม่เขียน CCCD ซ้ำ = ไม่มี subscribe event ใหม่ = ไม่มี cap
+        ทางแก้: รอ MTU โตก่อน แล้ว stop→start เพื่อบังคับให้เกิด subscribe event สดๆ ที่ MTU ใหญ่
+        """
+        cb = lambda _h, data: self._on_event(bytes(data))  # noqa: E731
+        # รอ MTU ให้พ้น 23 (ค่าเริ่มต้น) — WinRT เจรจาเองราวสองวินาที · ตัดที่ ~4s แล้วไปต่อ
+        for _ in range(20):
+            if getattr(client, "mtu_size", 0) > 23:
+                break
+            await asyncio.sleep(0.2)
+        try:
+            await client.start_notify(CHR_EVENT, cb)
+            # toggle เพื่อกระตุ้น subscribe event สดที่ MTU ใหญ่ — จำเป็นเมื่อ Windows restore
+            # การ subscribe จากตอน bond ไว้แล้ว (ไม่งั้น cap ตัวเต็มไม่มีวันมา)
+            await client.stop_notify(CHR_EVENT)
+            await asyncio.sleep(0.3)
+            await client.start_notify(CHR_EVENT, cb)
+        except Exception:
+            pass
 
     async def _drain_config(self, client: BleakClient) -> bool:
         """เขียนคำสั่ง config ที่ค้างทั้งหมดตามลำดับ — คืน False ถ้าลิงก์ขาด (ให้ session จบ)
