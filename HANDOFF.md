@@ -71,8 +71,32 @@ claude-monitor-main` is the user's **own working CYD firmware** — ground truth
   `~/.tamaclaude/stocks.json` `{"symbols":["AAPL","MSFT"]}`. Wired into the daemon + rotation
   plan. **178 pytest green.**
   **Remaining phase 5:** calendar only (mac-only EventKit — skip on Windows; the four
-  network-backed pages are all done). Phases 6-7 (tray UI, LAN) not started, independently
-  abandonable.
+  network-backed pages are all done).
+- **Phase 6 (tray UI) — DONE, 214 pytest green.** PySide6 (installed in `.venv`; declared as
+  the optional `[ui]` extra in `pyproject.toml` so the `--hook`/`--daemon` paths never import
+  Qt — verified). New `tamaclaude/ui/` package, two layers like mac: pure logic (`badge.py`,
+  `quota_card.py`, `refresh_control.py`, `panel_text.py` — tested in `tests/test_ui_logic.py`)
+  and QPainter draw (`badge_image.py`, `quota_card_view.py`, `panel.py`, `prefs.py`, `app.py`).
+  Run: `python -m tamaclaude --tray` (add `--no-ble` to skip the board). Tray badge = the 5h
+  window bar + pace mark (redrawn each second, theme-aware via `styleHints().colorScheme()` —
+  Windows has no `isTemplate`); left-click opens the popover (quota cards + board status +
+  session rows), gear/menu opens **Settings** (two tabs). Settings **closes the handoff's #1
+  gap**: it writes `session-key` and `finnhub-key` through `secret_file` (the ACL rule), edits
+  the weather/crypto/stocks JSON configs, toggles autostart, and drives Wi-Fi provisioning.
+  Concurrency (written in `ui/app.py`): Qt loop on the main thread; `Daemon.run()` in one worker
+  thread (it already owns the hook-server thread + the BLE asyncio thread); `on_wifi` crosses
+  from the BLE thread to Qt via a `Signal`; a 1 s `QTimer` reads `daemon.ui_state()` under the
+  daemon's lock. No `qasync`. Verified: constructs + paints offscreen, and ran 2.5 s on the real
+  display then quit 0.
+- **Phase 7 (Wi-Fi provisioning) — DONE, 214 pytest green. LAN failover deliberately NOT built.**
+  `wifi_provisioning.py` is a pure port of `WiFiProvisioning.swift` (WiFiCommand payloads with
+  sorted keys, BoardEvent.decode for ap/ap_end/wifi/cap, NetworkList row-merge) — tested in
+  `tests/test_wifi_provisioning.py`. `ble.py` gained `send_config()` + a config-write drain that
+  `pair()`s first (WinRT `pair()` returns None — don't test truthiness, just try the write).
+  `daemon.py` routes every BoardEvent through the decoder, keeps a live `NetworkList`/`WiFiStatus`
+  for the settings tab, and exposes `send_wifi()`. **LAN half (lan_frame/lan_key/lan_transport/
+  failover) was skipped by decision** — the plan says build it only if BLE proves flaky, and it
+  hasn't. That's the one piece of the whole migration still unbuilt.
 
 ## THE BLOCKER: display renders garbage — RESOLVED 2026-08-07
 
@@ -151,14 +175,20 @@ that read the key from stdin and write it via `secret_file.write` (wording alrea
 
 ## Immediate next step
 
-Everything network-backed works: display, quota (`"u"`), weather, crypto pages, all over BLE.
-178→182 pytest green. **Do next, in order of value:**
-1. Add the secret-key setter CLI (above) — unblocks stocks + the sessionKey poll pipe.
-2. Optionally `tamaclaude --install-hook` so the mascot reacts to Claude Code activity.
-3. Phase 5 calendar is **mac-only (EventKit)** — skip on Windows. Phases 6 (tray UI) and 7 (LAN
-   sealed transport) are unstarted and independently abandonable.
+Everything network-backed works over BLE: display, quota (`"u"`), weather, crypto, stocks, plus
+the tray UI and Wi-Fi provisioning. **214 pytest green.** The secret-key gap is closed by the
+Settings window (GUI). **Do next, in order of value:**
+1. Set the keys via **Settings ▸ General** (paste sessionKey + Finnhub key) — unblocks the stocks
+   page and the sessionKey poll pipe. (There is still no `--set-*-key` CLI for headless setups;
+   add one if a machine will run daemon-only — ~15 lines writing through `secret_file`.)
+2. Run the tray as the everyday app: `python -m tamaclaude --tray`, or enable autostart from
+   Settings. `tamaclaude --install-hook` still needed for the mascot to react to sessions.
+3. **Only remaining unbuilt piece: LAN sealed transport** (Phase 7 second half). Build it *only*
+   if BLE proves flaky in daily use — frame layout must match `ct_lan.c` byte for byte, grace
+   period is `Failover.swift`. Phase 5 calendar is mac-only (EventKit) — skip on Windows.
 4. Cleanup: untracked throwaway `firmware/probe/main/orient_probe.c` + the CRLF-only
    `firmware/probe/main/CMakeLists.txt` diff — discard or ignore.
 
-Branch `windows-quota-and-display-fix` (7 commits, not pushed, no PR). Build/flash firmware via
-the Phase 1 incantation; `.venv` is uv (no pip) — use `uv pip install -e host-win`.
+Branch `windows-quota-and-display-fix` (7 commits + this session's Phase 6/7 work, uncommitted,
+not pushed, no PR). Build/flash firmware via the Phase 1 incantation; `.venv` is uv (no pip) —
+use `uv pip install -e host-win[ui]` (the `[ui]` extra pulls PySide6 for the tray).

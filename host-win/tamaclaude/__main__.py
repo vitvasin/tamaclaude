@@ -9,6 +9,7 @@
     python -m tamaclaude --install-hook | --remove-hook
     python -m tamaclaude --install-statusline | --remove-statusline
     python -m tamaclaude --autostart | --no-autostart
+    python -m tamaclaude --tray                      tray UI (ต้อง `uv pip install -e host-win[ui]`)
 
 **`--hook` ต้องมาก่อนทุกอย่าง** และห้ามลาก import อะไรเพิ่ม — Claude Code รอทางนี้อยู่ทุกครั้ง
 ที่ยิงเหตุการณ์ · `argparse` เองก็หนักพอที่จะไม่คุ้ม จึงคัดด้วย `sys.argv` ดิบๆ ก่อน
@@ -78,6 +79,13 @@ def main(argv: list[str] | None = None) -> int:
             use_poll="--no-poll" not in args,
             use_pages="--no-pages" not in args,
         ).run()
+
+    if "--tray" in args:
+        # tray UI (Phase 6) = daemon ที่มีหน้าตา · PySide6 เป็น extra ([ui]) — import ที่นี่
+        # เท่านั้น ไม่ให้ทางอื่น (โดยเฉพาะ --hook) ต้องแบก Qt
+        from .ui.app import main as tray_main
+
+        return tray_main(no_ble="--no-ble" in args)
 
     print(__doc__, file=sys.stderr)
     return 1

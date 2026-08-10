@@ -9,6 +9,12 @@ description = "TamaClaude Windows host — Claude Code desk-monitor daemon (BLE 
 requires-python = ">=3.11"
 dependencies = ["bleak>=0.22", "tzdata>=2024.1"]
 
+# PySide6 เป็น extra ไม่ใช่ dependency หลัก โดยตั้งใจ: ทาง --hook ต้อง import ให้น้อยที่สุด
+# (งบ ~175ms — ดู plan) และ daemon แบบ headless (--daemon) ก็ไม่ต้องพึ่ง Qt · เฉพาะ tray UI
+# (Phase 6) เท่านั้นที่ต้องการ — ติดตั้งด้วย `uv pip install -e host-win[ui]`
+[project.optional-dependencies]
+ui = ["PySide6>=6.6"]
+
 [project.scripts]
 # ทำให้ `tamaclaude --daemon` / `--hook` / `--usage-poll` รันได้จากทุกที่ ไม่ต้อง cd เข้า host-win
 # ติดตั้งครั้งเดียว: pip install -e host-win (ในรูปแบบ editable — แก้โค้ดแล้วไม่ต้องติดตั้งซ้ำ)

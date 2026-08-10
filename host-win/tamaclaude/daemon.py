@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 import sys
 import threading
-from dataclasses import replace
+from collections.abc import Callable
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 
 from . import usage_reader
@@ -22,8 +23,24 @@ from .stocks_service import urllib_fetch as stocks_fetch
 from .tool_map import ToolMap
 from .weather import TempUnit
 from .weather_service import WeatherService, WeatherSettings, urllib_fetch
+from .wifi_provisioning import BoardEvent, NetworkList, WiFiCommand, WiFiStatus
 
 TICK = 1.0
+
+
+@dataclass(frozen=True)
+class DaemonUIState:
+    """สแนปช็อตข้ามเธรดสำหรับ UI — คัดลอกออกมาแล้ว ไม่ถือ reference ที่ tick แก้ต่อได้
+
+    ยกเว้น `networks`/`wifi_status` ที่เป็น object เดียวกับ daemon — หน้าตั้งค่าอ่านตอนวาด
+    เท่านั้นและ daemon แก้มันใต้ lock จึงยอมรับความเสี่ยงนั้นเพื่อไม่ต้อง deep-copy ทุกวินาที
+    """
+
+    usage: list | None
+    snapshot: object | None
+    connected: bool
+    networks: NetworkList
+    wifi_status: WiFiStatus | None
 
 
 class Daemon:
@@ -91,11 +108,22 @@ class Daemon:
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._server = HookServer(self._on_event)
+        # สถานะ Wi-Fi ที่หน้าตั้งค่า (Phase 6) อ่าน — ลิสต์เครือข่าย + สถานะล่าสุดของบอร์ด
+        # อัปเดตจาก BoardEvent ทุกครั้งที่บอร์ดแจ้งเข้ามา · UI ฟังผ่าน on_wifi callback
+        self.networks = NetworkList()
+        self.wifi_status: WiFiStatus | None = None
+        self.on_wifi: Callable[[], None] | None = None
+        # ค่าล่าสุดที่ tick คำนวณไว้ ให้ UI (Phase 6) อ่านข้ามเธรดได้โดยไม่ต้องคำนวณซ้ำ —
+        # tray timer เดินบนเธรด Qt ส่วน tick เดินบนเธรด daemon จึงอ่านใต้ _lock เดียวกัน
+        self._latest_usage: list | None = None
+        self._latest_snapshot = None
         self._transport = None
         if use_ble:
             from .ble import BleTransport
 
-            self._transport = BleTransport(on_event=self._on_board_event)
+            self._transport = BleTransport(
+                on_event=self._on_board_event, on_link=self._on_link
+            )
 
     # MARK: - เข้า
 
@@ -109,25 +137,49 @@ class Daemon:
     def _on_board_event(self, data: bytes) -> None:
         if self.verbose:
             print(f"[board] {data!r}", file=sys.stderr)
-        # บอร์ดประกาศหน้าที่มันรู้จักตอน subscribe CHR_EVENT: {"t":"cap","p":[0,1,..]}
+        event = BoardEvent.decode(data)
+        if event is None:
+            return  # firmware รุ่นใหม่กว่าที่เราไม่รู้จัก — ต้องไม่ทำให้ host พัง
+
+        # cap: บอร์ดประกาศหน้าที่มันรู้จักตอน subscribe CHR_EVENT ({"t":"cap","p":[0,1,..]})
         # announce() ล้างสถานะที่ส่งไปแล้วในตัว จึงครอบคลุมทั้งบอร์ดใหม่และการต่อกลับ
-        if self._hub is None:
-            return
-        try:
-            obj = json.loads(data)
-        except (json.JSONDecodeError, ValueError):
-            return
-        if isinstance(obj, dict) and obj.get("t") == "cap" and isinstance(obj.get("p"), list):
-            kinds = []
-            for raw in obj["p"]:
-                try:
-                    kinds.append(PageKind(raw))
-                except ValueError:
-                    continue  # หน้าที่ firmware ใหม่กว่ารู้จักแต่เราไม่ — ข้ามไป
+        if event.capability is not None:
+            if self._hub is None:
+                return
             with self._lock:
-                self._hub.announce(kinds)
+                self._hub.announce(event.capability)
             if self.verbose:
-                print(f"[pages] board knows {[k.name for k in kinds]}", file=sys.stderr)
+                names = [k.name for k in event.capability]
+                print(f"[pages] board knows {names}", file=sys.stderr)
+            return
+
+        # ap / ap_end / wifi: เลี้ยงลิสต์เครือข่าย + สถานะให้หน้าตั้งค่า แล้วปลุก UI
+        with self._lock:
+            self.networks.apply(event)
+            if event.wifi is not None:
+                self.wifi_status = event.wifi
+        if self.on_wifi is not None:
+            self.on_wifi()
+
+    def _on_link(self, up: bool) -> None:
+        # ลิงก์ขาด: สปินเนอร์สแกนที่ค้างคือคำโกหก — ล้างทิ้งแล้วปลุก UI ให้วาดใหม่
+        if not up:
+            with self._lock:
+                self.networks.link_lost()
+            if self.on_wifi is not None:
+                self.on_wifi()
+
+    def send_wifi(self, command: WiFiCommand) -> None:
+        """ส่งคำสั่ง Wi-Fi (หรือ LAN key) ไปบอร์ดทาง CHR_CONFIG — ไม่มีลิงก์ก็เงียบ
+
+        `scan` เริ่มรอบใหม่ที่ฝั่งเราด้วย (begin_scan) เพื่อให้ลิสต์ล้างของเก่าทันทีที่กด
+        ไม่ต้องรอ ap ใบแรก · เขียนจริงเมื่อ transport ต่อติดและ pair สำเร็จ
+        """
+        if command._object.get("c") == "scan":
+            with self._lock:
+                self.networks.begin_scan()
+        if self._transport is not None:
+            self._transport.send_config(command.payload)
 
     def _on_weather_frame(self, frame, observed_at: datetime) -> None:
         # เรียกจาก worker thread ของ WeatherService — เข้า hub ใต้ lock เดียวกับ tick
@@ -170,6 +222,9 @@ class Daemon:
         usage = usage_reader.read(datetime.now(timezone.utc))
         if usage is not None:
             snap = replace(snap, usage=usage)
+        with self._lock:
+            self._latest_usage = usage
+            self._latest_snapshot = snap
         payload = snap.encoded()
         if self.echo:
             print(payload.decode("utf-8", "replace"), flush=True)
@@ -209,6 +264,23 @@ class Daemon:
 
     def stop(self) -> None:
         self._stop.set()
+
+    # MARK: - สำหรับ UI (Phase 6) — อ่านข้ามเธรดใต้ lock เดียวกับ tick
+
+    def ui_state(self) -> "DaemonUIState":
+        """ภาพรวมที่ tray/popover ต้องวาด — usage ล่าสุด, snapshot, สถานะบอร์ด, Wi-Fi
+
+        อ่านค่าที่ tick คำนวณไว้แล้ว ไม่คำนวณซ้ำและไม่แตะดิสก์ — timer ของ UI เดินทุกวินาที
+        การอ่านไฟล์รอบสองทุกวินาทีเปล่าประโยชน์ (tick อ่านให้แล้ว)
+        """
+        with self._lock:
+            return DaemonUIState(
+                usage=list(self._latest_usage) if self._latest_usage is not None else None,
+                snapshot=self._latest_snapshot,
+                connected=bool(self._transport and self._transport.connected),
+                networks=self.networks,
+                wifi_status=self.wifi_status,
+            )
 
 
 def _weather_config() -> tuple[str, TempUnit]:
