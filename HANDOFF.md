@@ -116,10 +116,49 @@ Build/flash: use the incantation in Phase 1 below; `idf.py` needs IDF's own venv
   ▸ Remove, or `pnputil /remove-device "BTHLE\DEV_20500D2CEEBA\..."` elevated). It came back
   after a reconnect — expect to redo it. Independent of the display bug.
 
+## Live device state (as of 2026-08-08, on this machine)
+
+Board displays clean, connected over BLE. Configured live this session:
+- **statusline installed** (`tamaclaude --install-statusline`) → `~/.claude/settings.json`
+  `statusLine.command` runs `~/.tamaclaude/statusline.ps1`. Verified end-to-end: a Claude Code
+  render pipes `rate_limits` → `--usage-cache` → `~/.claude/.statusline-usage-cache` → daemon
+  `"u"` key → board top bar. Hook is **not** installed (mascot won't react to sessions until
+  `tamaclaude --install-hook` or `--install`).
+- **Page configs created**: `~/.tamaclaude/weather.json` `{"place":"Bangkok","unit":"C"}`,
+  `crypto.json` `{"coins":["btc","eth"]}`, `stocks.json` `{"symbols":["AAPL","MSFT"]}`.
+- **Confirmed working on board**: usage (top bar), crypto page. **Weather** was fixed this
+  session (see BLE bug below) — reaches the board after a daemon restart. **Stocks** is blocked:
+  no `~/.tamaclaude/finnhub-key` (service status says so).
+- Configs are read at daemon **startup only** — restart `tamaclaude --daemon` after editing them.
+
+## The BLE-drop bug (fixed d54b4af, but note the shape)
+
+`ble.py` `send()` was a single overwriting slot. `daemon.tick()` calls `send()` several times
+per tick (mascot snapshot, plan, each changed page frame). Sorted drain order meant crypto (g:2)
+clobbered weather (g:1); weather then would not re-drain for 15 min, so it never reached the
+board while crypto (60 s) did. Fixed: queue **per stream** (`_stream_key` → mascot / plan /
+`page:N`), newer replaces same stream, distinct streams all written; dedup per stream. Tests in
+`test_ble_queue.py`.
+
+## Known gap: no CLI to set the secret keys
+
+`finnhub-key` and `session-key` have no setter command. `secret_file.write` locks the ACL, but a
+hand-created file may be **refused** by `secret_file.read` if a broad principal can read it. The
+mac used its GUI. **Next obvious task:** add `tamaclaude --set-finnhub-key` / `--set-session-key`
+that read the key from stdin and write it via `secret_file.write` (wording already exists in
+`stocks_service.KEY_WORDING` / `usage_poll.KEY_WORDING`). Then `echo <key> | tamaclaude
+--set-finnhub-key` unblocks the stocks page and the poll-based usage source.
+
 ## Immediate next step
 
-Display is fixed and the Windows host (Phases 0-3) is done. **Next: Phase 4 (quota) — the ship
-point.** Files to write under `host-win/tamaclaude/`: usage_reader/writer/poll/poller.py,
-statusline.ps1 + .cmd shim, statusline_installer.py, hook_installer.py, autostart.py, plus a
-console-script entry point so `tamaclaude --daemon` runs without the `cd`. Phases 5-7 (data
-pages, UI, LAN) are independently abandonable.
+Everything network-backed works: display, quota (`"u"`), weather, crypto pages, all over BLE.
+178→182 pytest green. **Do next, in order of value:**
+1. Add the secret-key setter CLI (above) — unblocks stocks + the sessionKey poll pipe.
+2. Optionally `tamaclaude --install-hook` so the mascot reacts to Claude Code activity.
+3. Phase 5 calendar is **mac-only (EventKit)** — skip on Windows. Phases 6 (tray UI) and 7 (LAN
+   sealed transport) are unstarted and independently abandonable.
+4. Cleanup: untracked throwaway `firmware/probe/main/orient_probe.c` + the CRLF-only
+   `firmware/probe/main/CMakeLists.txt` diff — discard or ignore.
+
+Branch `windows-quota-and-display-fix` (7 commits, not pushed, no PR). Build/flash firmware via
+the Phase 1 incantation; `.venv` is uv (no pip) — use `uv pip install -e host-win`.
