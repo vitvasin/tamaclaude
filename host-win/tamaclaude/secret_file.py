@@ -105,8 +105,11 @@ def _others_can_read(path: Path) -> bool:
         ).stdout
     except (OSError, subprocess.SubprocessError):
         return False
-    # icacls แสดงชื่อบัญชี แต่ well-known principal มีชื่อคงที่พอสมควร · ตรวจทั้งชื่อและ SID
-    haystack = out.replace("\\", "\\").lower()
+    # icacls ขึ้นต้นด้วย *พาธของไฟล์* (เช่น C:\Users\005514\...) ก่อนรายการ ACE · พาธใต้
+    # โปรไฟล์ปกติมี "\Users\" อยู่แล้ว การสแกนหาชื่อ principal ในพาธจึงเป็น false positive
+    # กับความลับทุกใบใต้ %USERPROFILE% (บั๊กนี้ทำให้ finnhub-key/session-key ถูกปฏิเสธทั้งที่
+    # ACL แคบถูกต้อง) — ตัด token พาธทิ้งก่อนแล้วค่อยจับคู่เฉพาะบรรทัด ACE
+    haystack = out.lower().replace(str(path).lower(), "")
     names = ("everyone", "authenticated users", "\\users", "builtin\\users")
     if any(sid.lower() in haystack for sid in _BROAD_SIDS):
         return True
